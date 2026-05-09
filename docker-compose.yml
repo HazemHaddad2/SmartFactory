@@ -1,0 +1,138 @@
+services:
+
+  #  Infrastructure 
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+
+  #Microservices Backend 
+
+  user-service:
+    build:
+      context: ./user_service
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    volumes:
+      - ./user_service:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  machine-service:
+    build:
+      context: ./machine_service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+    volumes:
+      - ./machine_service:/app
+    environment:
+      EVENT_SERVICE_URL: http://event-service:8003
+      ALERT_SERVICE_URL: http://alert-service:8004
+      TEMPERATURE_THRESHOLD: "75.0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - kafka
+
+  event-service:
+    build:
+      context: ./event_service
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    command: uvicorn main:app --host 0.0.0.0 --port 8003 --reload --log-level info
+    volumes:
+      - ./event_service:/app
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      PYTHONUNBUFFERED: 1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - kafka
+
+  alert-service:
+    build:
+      context: ./alert_service
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8004"
+    command: uvicorn main:app --host 0.0.0.0 --port 8004 --reload --log-level info
+    volumes:
+      - ./alert_service:/app
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      PYTHONUNBUFFERED: 1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - kafka
+
+  maintenance-service:
+    build:
+      context: ./maintenance_service
+      dockerfile: Dockerfile
+    ports:
+      - "8005:8005"
+    command: uvicorn main:app --host 0.0.0.0 --port 8005 --reload
+    volumes:
+      - ./maintenance_service:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - kafka
+
+  # ─── Gateway ───────────────────────────────────────────────────────────────
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      USER_SERVICE_URL: http://user-service:8001
+      MACHINE_SERVICE_URL: http://machine-service:8002
+      EVENT_SERVICE_URL: http://event-service:8003
+      ALERT_SERVICE_URL: http://alert-service:8004
+      MAINTENANCE_SERVICE_URL: http://maintenance-service:8005
+    depends_on:
+      - user-service
+      - machine-service
+      - event-service
+      - alert-service
+      - maintenance-service
+
+  # ─── Frontend Flutter Web ──────────────────────────────────────────────────
+  # Nécessite d'avoir buildé le front au préalable :
+  #   cd ../SmartFactory_front && flutter build web --release
+
+  frontend:
+    build:
+      context: ../SmartFactory_front
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - gateway
